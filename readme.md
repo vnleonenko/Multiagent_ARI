@@ -17,4 +17,4 @@ It takes r% of households and leave only people from these households.
 Decreasing size of population should significantly reduce simulation time.
 3. ```simulation_influenza``` 
 To launch simulation run ```python agent_based_model.py``` from 
-```simulation_influenza``` directory.s
+```simulation_influenza``` directory.
