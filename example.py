@@ -11,7 +11,7 @@ if __name__ == '__main__':
             )
 
     pool.runs_params(
-            num_runs = 5, 
+            num_runs = 1, 
             days = [1, 50],
             data_folder = 'synthetic_sample_4000',
             )

@@ -1,5 +1,6 @@
 import numpy as np
 from collections import defaultdict
+from functools import partial
 import datetime
 import pandas as pd
 import json
@@ -60,7 +61,7 @@ class Main:
 
 
     @file_timer
-    def start(self):
+    def start(self, with_seirb=False):
         ''' функция запуска вычислений '''
         # np.random.seed(1)
 
@@ -68,22 +69,20 @@ class Main:
         print(data[data.susceptible_H1N1==0])
 
         cpu_num = mp.cpu_count()
-
         print("{} processors detected".format(cpu_num))
 
         print("Starting from I0: ")
         print(data[data.illness_day > 2].sp_id)
 
         with mp.Pool(self.num_runs) as pool:
-                pool.map(
-                    self.main, 
-                    range(self.num_runs)
-                )
+                #pool.map(self.main, range(self.num_runs),
+                pool.map(partial(self.main, with_seirb=with_seirb), 
+                         range(self.num_runs))
 
         return True
 
 
-    def main(self, number_seed):
+    def main(self, number_seed, with_seirb=False):
         ''' основной цикл работы '''
         # np.random.seed(1)
 
@@ -105,10 +104,21 @@ class Main:
         self.H = PF.Households(self.dict_hh_id)
         self.W = PF.Workplaces(self.dict_work_id)
         self.S = PF.Schools(self.dict_school_id, self.dict_school_len)
-
+        
+        if with_seirb:
+            # dataset со всеми данными на каждый день
+            self.cols = ['S','E','I','R','beta']
+            fin_cols = [f'{col}_{strain}' for strain in self.strains_keys 
+                                            for col in self.cols]
+            self.SEIRb_day = pd.DataFrame.from_records(np.zeros((len(self.days),
+                                                                 len(fin_cols))),
+                                                       columns=fin_cols)
+            self.SEIRb_day.index = self.days
+            
         # инфецирование по дням
         for j in self.days:
-            self.day(j, number_seed)
+            self.day(j, number_seed, with_seirb)
+           
 
         # выгрузка результатов в файлы
         self.json_from_dict(self.place_dict, r'/inf_people_{}.json', number_seed)
@@ -120,7 +130,7 @@ class Main:
 
 
     @day_timer
-    def day(self, j, number_seed):
+    def day(self, j, number_seed, with_seirb=False):
         ''' симуляция 1 дня '''
         if len(self.data_current[self.data_current.illness_day > 2]) != 0:
             x_rand = np.random.rand(1000000)
@@ -152,18 +162,46 @@ class Main:
                     real_inf_results_dic[key], 
                     ['infected', 'illness_day', 'susceptible_'+key]
                 ] = [self.IndexForStrain(key), 1, 0]
-
+                
             # Обновление словарей c id восприимчивых людей на местах
             for key in self.strains_keys:  
                 self.update_dict(key, 'sp_hh_id', self.dict_hh_id, real_inf_results_dic)
                 self.update_dict(key, 'work_id', self.dict_work_id, real_inf_results_dic)
                 self.update_dict(key, 'work_id', self.dict_school_id, real_inf_results_dic)
+                
+                # и добавление данных: S, E, I, R, beta
+                if with_seirb:
+                    strain_index = self.IndexForStrain(key)
+                    n_days_exposed = 2 # сколько дней не может заражать
+
+                    S = self.data_current[f'susceptible_{key}'].sum()
+                    # т.к. на 1-м и 2-м дне заразить не может (по ф-ии func_b_r)
+                    E = self.data_current[(self.data_current.infected == strain_index) & (
+                                            self.data_current.illness_day <= n_days_exposed)
+                                         ].shape[0]
+                    I = self.data_current[(self.data_current.infected == strain_index) & (
+                                            self.data_current.illness_day > n_days_exposed)
+                                         ].shape[0]
+                    R = self.data_current[(self.data_current[f'susceptible_{key}'] == 0) & (
+                                            self.data_current.infected == 0)
+                                         ].shape[0]
+
+                    new_i = self.data_current[(self.data_current.infected == strain_index) & (
+                                              self.data_current.illness_day == n_days_exposed+1)
+                                             ].shape[0]
+
+                    beta_value = new_i / (S*I)
+                    
+                    key_cols = [f'{col}_{key}' for col in self.cols]
+                    self.SEIRb_day.loc[j, key_cols] = [S, E, I, R, beta_value]
 
         self.infected_info(j, number_seed)
 
         self.csv_from_dict(self.results_dic, r'/prevalence_seed_{}.csv', number_seed)
         self.csv_from_dict(self.new_results_dic, r'/incidence_seed_{}.csv', number_seed)
-
+        if with_seirb:
+            self.csv_from_df(self.SEIRb_day, r'/seirb_seed_{}.csv', number_seed)
+        
         # отслеживание передачи заболевания в доме
         self.place_dict[j] = list(self.data_current[self.data_current.illness_day>0].sp_hh_id)
 
@@ -321,7 +359,17 @@ class Main:
         )           
 
         return True 
+    
+    def csv_from_df(self, df, f_name, number_seed): 
+        ''' генерация csv файла из датафрейма '''
+                    
+        df.to_csv(
+            self.results_dir + f_name.format(number_seed), 
+            sep='\t',
+            index=False
+        )           
 
+        return True 
 
     def json_from_dict(self, dic, f_name, number_seed):
         ''' генерация json файла из словаря '''
